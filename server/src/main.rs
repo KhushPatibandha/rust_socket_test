@@ -1,57 +1,47 @@
-use std::io::{ ErrorKind, Read, Write };
+use std::io::{ Read, Write };
 use std::net::TcpListener;
-use std::sync::mpsc;
-use std::thread;
-
-const LOCAL: &str = "127.0.0.1:6000";
-const MSG_SIZE: usize = 32;
-
-fn sleep() {
-    thread::sleep(::std::time::Duration::from_millis(100));
-}
 
 fn main() {
-    let server = TcpListener::bind(LOCAL).expect("Listener failed to bind");
-    server.set_nonblocking(true).expect("Failed to initialize non-blocking");
+    let listener = TcpListener::bind("127.0.0.1:8080").expect("Failed to bind to address");
+    println!("Server listening to 127.0.0.1:8080");
 
-    let mut clients = vec![];
-    let (tx, rx) = mpsc::channel::<String>();
     loop {
-        if let Ok((mut socket, addr)) = server.accept() {
-            println!("Client {} connected", addr);
+        match listener.accept() {
+            Ok((mut stream, addr)) => {
+                println!("New connection: {}", addr);
+                loop {
+                    let mut buff = [0; 1024];
+                    match stream.read(&mut buff) {
+                        Ok(0) => {
+                            println!("Client disconnected");
+                            break;
+                        },
+                        Ok(_) => {
+                            let request = String::from_utf8_lossy(&buff[..]);
+                            println!("Received Request: {}", request);
 
-            let tx = tx.clone();
-            clients.push(socket.try_clone().expect("Failed to clone client"));
-        
-            thread::spawn(move || loop {
-                let mut buff = vec![0; MSG_SIZE];
+                            let mut input = String::new();
 
-                match socket.read_exact(&mut buff) {
-                    Ok(_) => {
-                        let msg = buff.into_iter().take_while(|&x| x != 0).collect::<Vec<_>>();
-                        let msg = String::from_utf8(msg).expect("Invalid utf8 message");
-
-                        println!("{} {:?}", addr, msg);
-                        tx.send(msg).expect("failed to send message to rx");
-                    },
-                    Err(ref err) if err.kind() == ErrorKind::WouldBlock => (),
-                    Err(_) => {
-                        println!("Closing connection with {}", addr);
-                        break;
+                            print!("Enter a message: ");
+                            std::io::stdout().flush().unwrap();
+                            std::io::stdin().read_line(&mut input).unwrap();
+                            
+                            let response = input.as_bytes();
+                            if let Err(e) = stream.write(response) {
+                                eprintln!("Failed to write response: {}", e);
+                                break;
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Failed to read from client: {}", e);
+                            break;
+                        }
                     }
                 }
-                sleep();
-            });
+            },
+            Err(e) => {
+                eprintln!("Failed to establish connection: {}", e);
+            }
         }
-
-        if let Ok(msg) = rx.try_recv() {
-            clients = clients.into_iter().filter_map(|mut client| {
-                let mut buff = msg.clone().into_bytes();
-                buff.resize(MSG_SIZE, 0);
-
-                client.write_all(&buff).map(|_| client).ok()
-            }).collect::<Vec<_>>();
-        }
-        sleep();
     }
 }
